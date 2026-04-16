@@ -1,0 +1,384 @@
+@import url('https://fonts.googleapis.com/css2?family=Amiri+Quran&family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --bg-deep: #09110d;
+  --bg-mid: #102219;
+  --surface: rgba(16, 30, 22, 0.82);
+  --surface-border: rgba(235, 211, 156, 0.13);
+  --page-ink: #4d3921;
+  --page-soft: #e8d1a2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top, rgba(227, 187, 105, 0.16), transparent 34%),
+    radial-gradient(circle at 80% 20%, rgba(47, 127, 91, 0.18), transparent 28%),
+    linear-gradient(180deg, #132118 0%, #0a130e 45%, #070b08 100%);
+  color: #f5f0e7;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.2;
+  background:
+    linear-gradient(90deg, transparent 49%, rgba(255, 255, 255, 0.045) 50%, transparent 51%),
+    linear-gradient(transparent 49%, rgba(255, 255, 255, 0.04) 50%, transparent 51%);
+  background-size: 90px 90px;
+  mask-image: radial-gradient(circle at center, black, transparent 78%);
+}
+
+#root {
+  min-height: 100svh;
+}
+
+.app-shell {
+  position: relative;
+}
+
+.app-atmosphere {
+  position: fixed;
+  inset: -20% -10% auto;
+  height: 30rem;
+  pointer-events: none;
+  background:
+    radial-gradient(circle, rgba(232, 199, 128, 0.18), transparent 52%),
+    radial-gradient(circle at 80% 20%, rgba(85, 163, 125, 0.14), transparent 28%);
+  filter: blur(28px);
+}
+
+.kitab-heading {
+  font-family: 'Cormorant Garamond', serif;
+  letter-spacing: 0.02em;
+}
+
+.arabic-text {
+  font-family: 'Amiri Quran', 'Amiri', 'Traditional Arabic', serif;
+  direction: rtl;
+  unicode-bidi: embed;
+}
+
+.panel-surface {
+  position: relative;
+  overflow: hidden;
+  border-radius: 2rem;
+  border: 1px solid var(--surface-border);
+  background: linear-gradient(180deg, rgba(19, 35, 27, 0.92), rgba(12, 21, 17, 0.9));
+  box-shadow:
+    0 28px 70px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(24px);
+}
+
+.panel-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top right, rgba(255, 214, 143, 0.08), transparent 32%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.02), transparent 45%);
+}
+
+.ornament-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(63, 44, 18, 0.12);
+  background: rgba(255, 249, 238, 0.62);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.78rem;
+  color: #644b2c;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.52);
+}
+
+.reader-nav-button,
+.navigator-arrow {
+  border: 1px solid rgba(68, 48, 21, 0.1);
+  background: rgba(255, 249, 238, 0.62);
+  color: #513c20;
+  transition: transform 0.18s ease, background 0.18s ease, opacity 0.18s ease;
+}
+
+.reader-nav-button {
+  border-radius: 999px;
+  padding: 0.85rem 1.15rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.navigator-arrow {
+  width: 3rem;
+  border-radius: 1.2rem;
+  font-size: 1.6rem;
+}
+
+.reader-nav-button:hover:not(:disabled),
+.navigator-arrow:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(255, 249, 238, 0.78);
+}
+
+.reader-nav-button:disabled,
+.navigator-arrow:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.mushaf-scroll {
+  overflow-x: auto;
+  padding: 1.5rem;
+}
+
+.mushaf-page {
+  min-width: 720px;
+  border-radius: 2.25rem;
+  border: 1px solid rgba(120, 90, 41, 0.18);
+  background:
+    radial-gradient(circle at top, rgba(255, 252, 244, 0.74), transparent 26%),
+    linear-gradient(180deg, #f2e4c7 0%, #eddcb8 48%, #e7d1a2 100%);
+  color: var(--page-ink);
+  box-shadow:
+    0 26px 52px rgba(0, 0, 0, 0.15),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.32),
+    inset 0 -18px 40px rgba(184, 146, 82, 0.08);
+}
+
+.mushaf-page-continuous {
+  min-width: 100%;
+}
+
+.mushaf-page-top,
+.mushaf-page-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  color: rgba(86, 66, 37, 0.78);
+}
+
+.page-ornament {
+  width: 3.5rem;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(86, 66, 37, 0.4), transparent);
+}
+
+.mushaf-page-body {
+  padding: 0.4rem 2rem 2.1rem;
+}
+
+.mushaf-line-row {
+  position: relative;
+  min-height: 4.45rem;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid rgba(120, 90, 41, 0.08);
+}
+
+.mushaf-line-row:last-child {
+  border-bottom: none;
+}
+
+.mushaf-line {
+  width: 100%;
+  text-align: right;
+  font-size: clamp(2rem, 2.6vw, 2.65rem);
+  line-height: 1.95;
+}
+
+.surah-ayah-block {
+  margin: 0.8rem 0;
+  text-align: right;
+  font-size: clamp(2rem, 2.5vw, 2.75rem);
+  line-height: 2.05;
+}
+
+.word-token {
+  display: inline-block;
+  margin-inline: 0.25rem;
+  border-radius: 0.7rem;
+  padding: 0.12rem 0.28rem;
+  transition:
+    color 0.14s ease,
+    background 0.14s ease,
+    box-shadow 0.14s ease,
+    transform 0.14s ease;
+}
+
+.word-pending {
+  color: rgba(87, 66, 40, 0.94);
+}
+
+.word-correct {
+  color: #1f7a56;
+}
+
+.word-mistake {
+  color: #a53f33;
+  background: rgba(196, 89, 68, 0.13);
+}
+
+.word-current {
+  color: #6b4f0d;
+  background: rgba(240, 196, 94, 0.25);
+  box-shadow: inset 0 -2px 0 rgba(126, 87, 14, 0.4);
+}
+
+.word-live {
+  box-shadow:
+    inset 0 -2px 0 rgba(51, 94, 169, 0.24),
+    0 0 0 1px rgba(95, 142, 229, 0.38),
+    0 0 0 5px rgba(111, 161, 255, 0.08);
+}
+
+.word-skipped {
+  color: #b86d20;
+  background: rgba(230, 154, 53, 0.14);
+  text-decoration: line-through;
+}
+
+.ayah-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-inline: 0.45rem;
+  color: #7e6a42;
+  font-size: 1.2rem;
+}
+
+.page-break-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 1.35rem 0 1rem;
+  color: rgba(94, 71, 38, 0.7);
+  font-size: 0.78rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.page-break-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(94, 71, 38, 0.28), transparent);
+}
+
+.reader-empty-state {
+  display: flex;
+  min-height: 520px;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  border-radius: 2rem;
+  background:
+    linear-gradient(180deg, rgba(245, 233, 207, 0.94), rgba(233, 214, 169, 0.92));
+  color: #5c4627;
+}
+
+.legend-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.legend-dot-pending { background: #7e7460; }
+.legend-dot-current { background: #d9a73b; }
+.legend-dot-live { background: #71a2ff; }
+.legend-dot-correct { background: #2d8a61; }
+.legend-dot-mistake { background: #c55b47; }
+.legend-dot-skipped { background: #d68a37; }
+
+.summary-stat {
+  border-radius: 1.5rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f3ebde;
+}
+
+.summary-stat-success {
+  color: #8ef0bd;
+  background: rgba(46, 125, 86, 0.12);
+}
+
+.summary-stat-warning {
+  color: #ffd29f;
+  background: rgba(181, 115, 35, 0.12);
+}
+
+.summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.5rem 0.85rem;
+  font-size: 1rem;
+}
+
+.summary-chip-warning {
+  background: rgba(205, 136, 53, 0.14);
+  border: 1px solid rgba(205, 136, 53, 0.22);
+  color: #f3cf99;
+}
+
+.summary-chip-danger {
+  background: rgba(197, 91, 71, 0.14);
+  border: 1px solid rgba(197, 91, 71, 0.22);
+  color: #f2b8ad;
+}
+
+.summary-chip-meta {
+  font-size: 0.72rem;
+  color: currentColor;
+  opacity: 0.72;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0.35); }
+  70% { box-shadow: 0 0 0 13px rgba(110, 231, 183, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0); }
+}
+
+.recording-pulse {
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+@media (max-width: 1024px) {
+  .mushaf-scroll {
+    padding: 1rem;
+  }
+
+  .mushaf-page {
+    min-width: 660px;
+  }
+}
+
+@media (max-width: 640px) {
+  .panel-surface {
+    border-radius: 1.6rem;
+  }
+
+  .mushaf-page {
+    min-width: 620px;
+  }
+
+  .mushaf-page-body {
+    padding-inline: 1.5rem;
+  }
+}
