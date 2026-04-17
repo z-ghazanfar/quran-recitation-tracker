@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { splitIntoWords } from '../utils/arabicNormalize.js';
+import { createAsrProcessorService } from '../services/asrProcessorService.js';
 
 const STABLE_INTERIM_COMMIT_MS = 320;
 const AUDIO_SOURCE = {
@@ -32,7 +32,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
   const activeRef = useRef(false);
   const terminalErrorRef = useRef(null);
   const emittedWordsRef = useRef(new Map());
-  const latestInterimWordsRef = useRef(new Map());
+  const latestInterimResultsRef = useRef(new Map());
   const stableCommitTimersRef = useRef(new Map());
   const sourceRef = useRef(AUDIO_SOURCE.MICROPHONE);
   const sourceTrackRef = useRef(null);
@@ -90,7 +90,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
-
+    const asrProcessor = createAsrProcessorService();
     const recognition = new SR();
     recognition.lang = 'ar';           // 'ar' is more compatible than 'ar-SA'
     recognition.continuous = true;
@@ -112,7 +112,9 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       stableCommitTimersRef.current.clear();
     };
 
-    const emitTranscriptUpdate = (resultIndex, words) => {
+    const emitTranscriptUpdate = (resultIndex, processed) => {
+      const words = processed?.words ?? [];
+      const normalizedWords = processed?.normalizedWords ?? [];
       if (words.length === 0) return;
 
       const previousWords = emittedWordsRef.current.get(resultIndex) ?? [];
@@ -129,22 +131,26 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       const incrementalWords = words.slice(overlapStart);
       if (incrementalWords.length === 0) return;
 
-      onWordsRef.current?.(incrementalWords);
+      onWordsRef.current?.({
+        ...processed,
+        words: incrementalWords,
+        normalizedWords: normalizedWords.slice(overlapStart),
+      });
       emittedWordsRef.current.set(resultIndex, words);
     };
 
-    const scheduleStableCommit = (resultIndex, words) => {
+    const scheduleStableCommit = (resultIndex, transcript) => {
       clearStableCommitTimer(resultIndex);
 
       const timer = setTimeout(() => {
         stableCommitTimersRef.current.delete(resultIndex);
-        const latestWords = latestInterimWordsRef.current.get(resultIndex) ?? [];
+        const latestEntry = latestInterimResultsRef.current.get(resultIndex);
 
-        if (!activeRef.current || latestWords.join(' ') !== words.join(' ')) {
+        if (!activeRef.current || !latestEntry || latestEntry.transcript !== transcript) {
           return;
         }
 
-        emitTranscriptUpdate(resultIndex, latestWords);
+        emitTranscriptUpdate(resultIndex, latestEntry.processed);
       }, STABLE_INTERIM_COMMIT_MS);
 
       stableCommitTimersRef.current.set(resultIndex, timer);
@@ -152,7 +158,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
 
     recognition.onstart = () => {
       emittedWordsRef.current = new Map();
-      latestInterimWordsRef.current = new Map();
+      latestInterimResultsRef.current = new Map();
       clearAllStableCommitTimers();
       setIsListening(true);
     };
@@ -163,24 +169,31 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0].transcript.trim();
-        const words = splitIntoWords(transcript);
-        const previousWords = emittedWordsRef.current.get(i) ?? [];
 
         if (result.isFinal) {
           clearStableCommitTimer(i);
-          latestInterimWordsRef.current.delete(i);
-          emitTranscriptUpdate(i, words);
+          latestInterimResultsRef.current.delete(i);
+          asrProcessor.processFinal(transcript, (processed) => {
+            emitTranscriptUpdate(i, processed);
+          });
         } else {
-          latestInterimWordsRef.current.set(i, words);
           latestInterim = transcript;
+          asrProcessor.processInterim(transcript, (processed) => {
+            const latestWords = processed?.words ?? [];
+            const previousWords = emittedWordsRef.current.get(i) ?? [];
+            latestInterimResultsRef.current.set(i, { transcript, processed });
 
-          if (words.length > previousWords.length) {
-            emitTranscriptUpdate(i, words);
-          } else if (words.length > 0 && words.join(' ') !== previousWords.join(' ')) {
-            scheduleStableCommit(i, words);
-          } else {
-            clearStableCommitTimer(i);
-          }
+            if (latestWords.length > previousWords.length) {
+              emitTranscriptUpdate(i, processed);
+            } else if (
+              latestWords.length > 0 &&
+              latestWords.join(' ') !== previousWords.join(' ')
+            ) {
+              scheduleStableCommit(i, transcript);
+            } else {
+              clearStableCommitTimer(i);
+            }
+          });
         }
       }
 
@@ -244,6 +257,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
         // Ignore teardown races when recognition has already stopped.
       }
       recognitionRef.current = null;
+      asrProcessor.dispose();
       stopSourceCapture();
     };
   }, [stopSourceCapture]);
@@ -415,7 +429,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
     activeRef.current = false;
     setIsListening(false);
     emittedWordsRef.current = new Map();
-    latestInterimWordsRef.current = new Map();
+    latestInterimResultsRef.current = new Map();
     for (const timer of stableCommitTimersRef.current.values()) {
       clearTimeout(timer);
     }

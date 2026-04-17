@@ -4,6 +4,7 @@ import QuranDisplay from './components/QuranDisplay.jsx';
 import MistakesSummary from './components/MistakesSummary.jsx';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition.js';
 import { matchSpokenWords, initWordStates, WORD_STATE } from './utils/wordMatcher.js';
+import { normalizeWords } from './utils/matchingCore.js';
 import { SURAHS, TOTAL_PAGES } from './data/quranMeta.js';
 
 const initialRecitationState = {
@@ -300,18 +301,22 @@ export default function App() {
     }
   }, []);
 
-  const compareWordsRef = useRef([]);
+  const expectedSessionRef = useRef({ words: [], normalizedWords: [] });
   useEffect(() => {
-    compareWordsRef.current = ayahs.flatMap(ayah => ayah.compareWords);
+    const words = ayahs.flatMap(ayah => ayah.compareWords);
+    expectedSessionRef.current = {
+      words,
+      normalizedWords: normalizeWords(words),
+    };
   }, [ayahs]);
 
-  const handleWords = useCallback((spokenWords) => {
+  const handleWords = useCallback((spokenChunk) => {
     const { wordStates: statesSnapshot, currentWordIndex: indexSnapshot } = stateRef.current;
     const { states, newIndex, heardWordIndexes = [] } = matchSpokenWords(
-      compareWordsRef.current,
+      expectedSessionRef.current,
       statesSnapshot,
       indexSnapshot,
-      spokenWords,
+      spokenChunk,
     );
 
     stateRef.current = {
@@ -324,7 +329,7 @@ export default function App() {
       states,
       heardWordIndexes,
       newIndex,
-      lastHeard: spokenWords.join(' '),
+      lastHeard: spokenChunk.words.join(' '),
     });
 
     if (activeReadClearTimerRef.current) {
