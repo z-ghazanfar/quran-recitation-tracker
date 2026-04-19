@@ -16,6 +16,16 @@ function toVariantList(token) {
     return token.map(value => normalizeArabic(value)).filter(Boolean);
   }
 
+  if (token && typeof token === 'object') {
+    if (Array.isArray(token.variants) && token.variants.length > 0) {
+      return token.variants.map(value => normalizeArabic(value)).filter(Boolean);
+    }
+
+    if (typeof token.text === 'string') {
+      return getArabicWordVariants(token.text);
+    }
+  }
+
   return getArabicWordVariants(token);
 }
 
@@ -119,6 +129,10 @@ export function isApproximateMatch(expectedToken, recognizedToken, options = {})
 
 function getCanonicalToken(token) {
   const variants = toVariantList(token);
+  if (token && typeof token === 'object' && typeof token.text === 'string') {
+    return normalizeArabic(token.text) || variants[0] || '';
+  }
+
   return variants[0] ?? '';
 }
 

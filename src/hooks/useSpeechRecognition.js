@@ -114,6 +114,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
 
     const emitTranscriptUpdate = (resultIndex, processed) => {
       const words = processed?.words ?? [];
+      const tokens = processed?.tokens ?? [];
       const normalizedWords = processed?.normalizedWords ?? [];
       if (words.length === 0) return;
 
@@ -134,6 +135,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       onWordsRef.current?.({
         ...processed,
         words: incrementalWords,
+        tokens: tokens.slice(overlapStart),
         normalizedWords: normalizedWords.slice(overlapStart),
       });
       emittedWordsRef.current.set(resultIndex, words);

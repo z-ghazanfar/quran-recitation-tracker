@@ -2,10 +2,15 @@ import { getArabicWordVariants, splitIntoWords } from '../utils/arabicNormalize.
 
 function processTranscript(transcript, isInterim) {
   const words = splitIntoWords(transcript);
+  const tokens = words.map(text => ({
+    text,
+    variants: getArabicWordVariants(text),
+  }));
 
   return {
     words,
-    normalizedWords: words.map(getArabicWordVariants),
+    tokens,
+    normalizedWords: tokens.map(token => token.variants),
     wordCount: words.length,
     isInterim,
   };

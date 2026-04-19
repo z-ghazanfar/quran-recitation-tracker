@@ -4,20 +4,32 @@ import QuranDisplay from './components/QuranDisplay.jsx';
 import MistakesSummary from './components/MistakesSummary.jsx';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition.js';
 import { matchSpokenWords, initWordStates, WORD_STATE } from './utils/wordMatcher.js';
-import { normalizeWords } from './utils/matchingCore.js';
 import { SURAHS, TOTAL_PAGES } from './data/quranMeta.js';
+import {
+  getCurrentPositionFromSession,
+  getPageSelection,
+  getSurahSelection,
+} from './data/quranDataset.js';
 
 const initialRecitationState = {
   ayahs: [],
+  session: {
+    canonicalWords: [],
+    alignmentWords: [],
+    canonicalRanges: [],
+  },
   isLoading: false,
   loadError: null,
   wordStates: [],
   activeWordIndexes: [],
   currentWordIndex: 0,
+  currentAlignmentIndex: 0,
   interimText: '',
   lastHeard: '',
   sessionStarted: false,
 };
+
+const MAX_PENDING_CHUNK_WORDS = 10;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -27,66 +39,58 @@ function countWords(ayahs) {
   return ayahs.reduce((total, ayah) => total + ayah.words.length, 0);
 }
 
-function mapVerse(verse) {
-  const wordItems = verse.words.filter(word => word.char_type_name === 'word');
-  const chapterNumber = verse.chapter_id ?? Number((verse.verse_key ?? '1:1').split(':')[0]);
-  const pageNumber = verse.page_number ?? wordItems[0]?.page_number ?? null;
+function getChunkOverlapLength(previousWords, nextWords) {
+  const maxOverlap = Math.min(previousWords.length, nextWords.length, 4);
+
+  for (let overlap = maxOverlap; overlap >= 1; overlap -= 1) {
+    let matches = true;
+
+    for (let index = 0; index < overlap; index += 1) {
+      if (previousWords[previousWords.length - overlap + index] !== nextWords[index]) {
+        matches = false;
+        break;
+      }
+    }
+
+    if (matches) {
+      return overlap;
+    }
+  }
+
+  return 0;
+}
+
+function trimChunkToWordLimit(spokenChunk, maxWords) {
+  if ((spokenChunk?.words?.length ?? 0) <= maxWords) {
+    return spokenChunk;
+  }
+
+  const start = spokenChunk.words.length - maxWords;
 
   return {
-    number: verse.id,
-    chapterNumber,
-    verseKey: verse.verse_key,
-    numberInSurah: verse.verse_number,
-    pageNumber,
-    wordEntries: wordItems.map((word, index) => ({
-      id: `${verse.id}-${index}`,
-      display: word.text_uthmani,
-      compare: word.text_imlaei_simple,
-      lineNumber: word.line_number ? clamp(Number(word.line_number), 1, 15) : null,
-    })),
-    words: wordItems.map(word => word.text_uthmani),
-    compareWords: wordItems.map(word => word.text_imlaei_simple),
+    ...spokenChunk,
+    words: spokenChunk.words.slice(start),
+    tokens: (spokenChunk.tokens ?? []).slice(start),
+    normalizedWords: (spokenChunk.normalizedWords ?? []).slice(start),
   };
 }
 
-async function fetchAyahs(surahNum, startAyah) {
-  const allVerses = [];
-  let page = 1;
-
-  while (true) {
-    const res = await fetch(
-      `https://api.quran.com/api/v4/verses/by_chapter/${surahNum}` +
-      `?words=true&word_fields=text_uthmani,text_imlaei_simple,line_number&page=${page}&per_page=50&language=en`
-    );
-
-    if (!res.ok) {
-      throw new Error(`Failed to load verses (HTTP ${res.status}). Check your connection.`);
-    }
-
-    const json = await res.json();
-    allVerses.push(...json.verses);
-
-    if (!json.pagination.next_page) break;
-    page += 1;
+function mergeSpokenChunks(previousChunk, nextChunk) {
+  if (!previousChunk) {
+    return trimChunkToWordLimit(nextChunk, MAX_PENDING_CHUNK_WORDS);
   }
 
-  return allVerses
-    .filter(verse => verse.verse_number >= startAyah)
-    .map(mapVerse);
-}
+  const overlap = getChunkOverlapLength(previousChunk.words ?? [], nextChunk.words ?? []);
 
-async function fetchPage(pageNum) {
-  const res = await fetch(
-    `https://api.quran.com/api/v4/verses/by_page/${pageNum}` +
-    '?words=true&word_fields=text_uthmani,text_imlaei_simple,line_number&language=en'
-  );
-
-  if (!res.ok) {
-    throw new Error(`Failed to load page ${pageNum} (HTTP ${res.status}). Check your connection.`);
-  }
-
-  const json = await res.json();
-  return json.verses.map(mapVerse);
+  return trimChunkToWordLimit({
+    ...nextChunk,
+    words: [...(previousChunk.words ?? []), ...(nextChunk.words ?? []).slice(overlap)],
+    tokens: [...(previousChunk.tokens ?? []), ...(nextChunk.tokens ?? []).slice(overlap)],
+    normalizedWords: [
+      ...(previousChunk.normalizedWords ?? []),
+      ...(nextChunk.normalizedWords ?? []).slice(overlap),
+    ],
+  }, MAX_PENDING_CHUNK_WORDS);
 }
 
 function recitationReducer(state, action) {
@@ -95,24 +99,32 @@ function recitationReducer(state, action) {
       return {
         ...state,
         ayahs: [],
+        session: {
+          canonicalWords: [],
+          alignmentWords: [],
+          canonicalRanges: [],
+        },
         isLoading: true,
         loadError: null,
         wordStates: [],
         activeWordIndexes: [],
         currentWordIndex: 0,
+        currentAlignmentIndex: 0,
         interimText: '',
         lastHeard: '',
       };
     case 'load-success': {
-      const totalWords = countWords(action.verses);
+      const totalWords = action.totalWords;
       return {
         ...state,
         ayahs: action.verses,
+        session: action.session,
         isLoading: false,
         loadError: null,
         wordStates: initWordStates(totalWords),
         activeWordIndexes: [],
         currentWordIndex: 0,
+        currentAlignmentIndex: 0,
         interimText: '',
         lastHeard: '',
       };
@@ -121,11 +133,17 @@ function recitationReducer(state, action) {
       return {
         ...state,
         ayahs: [],
+        session: {
+          canonicalWords: [],
+          alignmentWords: [],
+          canonicalRanges: [],
+        },
         isLoading: false,
         loadError: action.message,
         wordStates: [],
         activeWordIndexes: [],
         currentWordIndex: 0,
+        currentAlignmentIndex: 0,
         interimText: '',
         lastHeard: '',
       };
@@ -135,6 +153,7 @@ function recitationReducer(state, action) {
         wordStates: action.states,
         activeWordIndexes: action.heardWordIndexes,
         currentWordIndex: action.newIndex,
+        currentAlignmentIndex: action.newAlignmentIndex,
         lastHeard: action.lastHeard,
         interimText: '',
       };
@@ -154,6 +173,7 @@ function recitationReducer(state, action) {
         wordStates: initWordStates(countWords(state.ayahs)),
         activeWordIndexes: [],
         currentWordIndex: 0,
+        currentAlignmentIndex: 0,
         interimText: '',
         lastHeard: '',
         sessionStarted: false,
@@ -163,6 +183,7 @@ function recitationReducer(state, action) {
         ...state,
         activeWordIndexes: [],
         currentWordIndex: 0,
+        currentAlignmentIndex: 0,
         interimText: '',
         lastHeard: '',
         sessionStarted: false,
@@ -231,27 +252,6 @@ function buildSelectionInfo(ayahs, mode, pageNum) {
   };
 }
 
-function getCurrentPosition(ayahs, currentWordIndex) {
-  if (currentWordIndex < 0) return null;
-
-  let flatIndex = 0;
-  for (const ayah of ayahs) {
-    for (const _word of ayah.words) {
-      if (flatIndex === currentWordIndex) {
-        return {
-          ayah: ayah.numberInSurah,
-          page: ayah.pageNumber,
-          surahName: getSurahName(ayah.chapterNumber),
-        };
-      }
-
-      flatIndex += 1;
-    }
-  }
-
-  return null;
-}
-
 function MetaChip({ label, value }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-[#12251b]/80 px-3 py-2 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -279,21 +279,24 @@ export default function App() {
   const [state, dispatch] = useReducer(recitationReducer, initialRecitationState);
   const {
     ayahs,
+    session,
     isLoading,
     loadError,
     wordStates,
     activeWordIndexes,
     currentWordIndex,
+    currentAlignmentIndex,
     interimText,
     lastHeard,
     sessionStarted,
   } = state;
 
-  const stateRef = useRef({ wordStates: [], currentWordIndex: 0 });
+  const stateRef = useRef({ wordStates: [], currentWordIndex: 0, currentAlignmentIndex: 0 });
   const activeReadClearTimerRef = useRef(null);
+  const pendingSpokenChunkRef = useRef(null);
   useEffect(() => {
-    stateRef.current = { wordStates, currentWordIndex };
-  }, [wordStates, currentWordIndex]);
+    stateRef.current = { wordStates, currentWordIndex, currentAlignmentIndex };
+  }, [currentAlignmentIndex, currentWordIndex, wordStates]);
 
   useEffect(() => () => {
     if (activeReadClearTimerRef.current) {
@@ -301,35 +304,55 @@ export default function App() {
     }
   }, []);
 
-  const expectedSessionRef = useRef({ words: [], normalizedWords: [] });
-  useEffect(() => {
-    const words = ayahs.flatMap(ayah => ayah.compareWords);
-    expectedSessionRef.current = {
-      words,
-      normalizedWords: normalizeWords(words),
-    };
-  }, [ayahs]);
+  const expectedSessionRef = useRef({
+    canonicalWords: [],
+    alignmentWords: [],
+    canonicalRanges: [],
+  });
 
   const handleWords = useCallback((spokenChunk) => {
-    const { wordStates: statesSnapshot, currentWordIndex: indexSnapshot } = stateRef.current;
-    const { states, newIndex, heardWordIndexes = [] } = matchSpokenWords(
+    const {
+      wordStates: statesSnapshot,
+      currentWordIndex: currentWordSnapshot,
+      currentAlignmentIndex: alignmentSnapshot,
+    } = stateRef.current;
+    const combinedChunk = mergeSpokenChunks(pendingSpokenChunkRef.current, spokenChunk);
+    const {
+      states,
+      newAlignmentIndex,
+      newCanonicalIndex,
+      heardWordIndexes = [],
+    } = matchSpokenWords(
       expectedSessionRef.current,
       statesSnapshot,
-      indexSnapshot,
-      spokenChunk,
+      alignmentSnapshot,
+      combinedChunk,
     );
+    const progressed = newAlignmentIndex > alignmentSnapshot;
+    const isReviewOnly =
+      !progressed &&
+      heardWordIndexes.length > 0 &&
+      heardWordIndexes.every((index) => index < currentWordSnapshot);
+
+    if (progressed || isReviewOnly) {
+      pendingSpokenChunkRef.current = null;
+    } else {
+      pendingSpokenChunkRef.current = combinedChunk;
+    }
 
     stateRef.current = {
       wordStates: states,
-      currentWordIndex: newIndex,
+      currentWordIndex: newCanonicalIndex,
+      currentAlignmentIndex: newAlignmentIndex,
     };
 
     dispatch({
       type: 'apply-final-words',
       states,
       heardWordIndexes,
-      newIndex,
-      lastHeard: spokenChunk.words.join(' '),
+      newIndex: newCanonicalIndex,
+      newAlignmentIndex,
+      lastHeard: combinedChunk.words.join(' '),
     });
 
     if (activeReadClearTimerRef.current) {
@@ -366,26 +389,32 @@ export default function App() {
   });
 
   useEffect(() => {
-    let cancelled = false;
     dispatch({ type: 'load-start' });
+    try {
+      const selection = navigationMode === 'page'
+        ? getPageSelection(clamp(pageNum, 1, TOTAL_PAGES))
+        : getSurahSelection(surahNum, ayahNum);
 
-    const loader = navigationMode === 'page'
-      ? fetchPage(clamp(pageNum, 1, TOTAL_PAGES))
-      : fetchAyahs(surahNum, ayahNum);
+      expectedSessionRef.current = selection.session;
+      pendingSpokenChunkRef.current = null;
+      stateRef.current = {
+        wordStates: initWordStates(selection.session.canonicalWords.length),
+        currentWordIndex: 0,
+        currentAlignmentIndex: 0,
+      };
 
-    loader
-      .then(verses => {
-        if (cancelled) return;
-        dispatch({ type: 'load-success', verses });
-      })
-      .catch(error => {
-        if (cancelled) return;
-        dispatch({ type: 'load-error', message: error.message });
+      dispatch({
+        type: 'load-success',
+        verses: selection.ayahs,
+        session: selection.session,
+        totalWords: selection.session.canonicalWords.length,
       });
-
-    return () => {
-      cancelled = true;
-    };
+    } catch (error) {
+      dispatch({
+        type: 'load-error',
+        message: error instanceof Error ? error.message : 'Failed to load the selected reading range.',
+      });
+    }
   }, [navigationMode, pageNum, surahNum, ayahNum]);
 
   const resetForNavigation = useCallback(() => {
@@ -394,6 +423,12 @@ export default function App() {
       clearTimeout(activeReadClearTimerRef.current);
       activeReadClearTimerRef.current = null;
     }
+    stateRef.current = {
+      wordStates: initWordStates(expectedSessionRef.current.canonicalWords.length),
+      currentWordIndex: 0,
+      currentAlignmentIndex: 0,
+    };
+    pendingSpokenChunkRef.current = null;
     dispatch({ type: 'clear-session' });
   }, [isListening, stop]);
 
@@ -428,6 +463,7 @@ export default function App() {
   const handleStartStop = async () => {
     if (isListening) {
       stop();
+      pendingSpokenChunkRef.current = null;
       if (activeReadClearTimerRef.current) {
         clearTimeout(activeReadClearTimerRef.current);
         activeReadClearTimerRef.current = null;
@@ -444,10 +480,16 @@ export default function App() {
 
   const handleReset = () => {
     if (isListening) stop();
+    pendingSpokenChunkRef.current = null;
     if (activeReadClearTimerRef.current) {
       clearTimeout(activeReadClearTimerRef.current);
       activeReadClearTimerRef.current = null;
     }
+    stateRef.current = {
+      wordStates: initWordStates(expectedSessionRef.current.canonicalWords.length),
+      currentWordIndex: 0,
+      currentAlignmentIndex: 0,
+    };
     dispatch({ type: 'reset-session' });
   };
 
@@ -457,7 +499,9 @@ export default function App() {
     wordState => wordState === WORD_STATE.MISTAKE || wordState === WORD_STATE.SKIPPED,
   ).length;
   const correctCount = wordStates.filter(wordState => wordState === WORD_STATE.CORRECT).length;
-  const currentPosition = getCurrentPosition(ayahs, sessionStarted ? currentWordIndex : -1);
+  const currentPosition = sessionStarted
+    ? getCurrentPositionFromSession(session, currentWordIndex)
+    : null;
   const pageRange = getPageRange(ayahs);
 
   return (
@@ -697,7 +741,7 @@ export default function App() {
                 <span className="ornament-chip">{countWords(ayahs)} words in focus</span>
                 {currentPosition && (
                   <span className="ornament-chip">
-                    Tracking {currentPosition.surahName} · ayah {currentPosition.ayah}
+                    Tracking {getSurahName(currentPosition.surah)} · ayah {currentPosition.ayah}
                   </span>
                 )}
               </div>
