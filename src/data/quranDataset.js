@@ -1,6 +1,10 @@
 import mushafTranslatorIndex from './mushaf-source/metadata/mushaf-translator-index.json';
 import quranSimpleClean from './mushaf-source/text/quran-simple-clean.json';
 import { getArabicWordVariants } from '../utils/arabicNormalize.js';
+import {
+  extractQuranOrthographyFeatures,
+  mergeQuranVariants,
+} from '../utils/quranOrthography.js';
 
 const pageModules = import.meta.glob('./mushaf-source/pages/*.json', {
   eager: true,
@@ -29,29 +33,6 @@ function splitSimpleTokens(text) {
     .split(/\s+/u)
     .map((token) => token.trim())
     .filter(Boolean);
-}
-
-function mergeVariants(...sources) {
-  const variants = new Set();
-
-  for (const source of sources) {
-    if (!source) continue;
-
-    if (Array.isArray(source)) {
-      for (const value of source) {
-        for (const variant of getArabicWordVariants(value)) {
-          variants.add(variant);
-        }
-      }
-      continue;
-    }
-
-    for (const variant of getArabicWordVariants(source)) {
-      variants.add(variant);
-    }
-  }
-
-  return Array.from(variants);
 }
 
 function createVerseRecord({ surahNumber, ayahNumber, pageNumber }) {
@@ -110,6 +91,7 @@ for (const pageNumber of pageNumbers) {
           display: word.text,
           uthmaniText: word.text,
           indopakText: word.indopak ?? word.text,
+          quranFeatures: extractQuranOrthographyFeatures(word.text),
           surah: surahNumber,
           ayah: ayahNumber,
           page: pageNumber,
@@ -178,8 +160,13 @@ for (const verseRecord of verseMap.values()) {
 
     return {
       text: token,
-      variants: mergeVariants(token, canonicalWord?.uthmaniText, canonicalWord?.indopakText),
+      variants: mergeQuranVariants({
+        tokenText: token,
+        uthmaniText: canonicalWord?.uthmaniText,
+        indopakText: canonicalWord?.indopakText,
+      }),
       wordId: canonicalWord?.wordId,
+      quranFeatures: canonicalWord?.quranFeatures ?? null,
       surah: canonicalWord?.surah,
       ayah: canonicalWord?.ayah,
       page: canonicalWord?.page,
@@ -191,11 +178,11 @@ for (const verseRecord of verseMap.values()) {
   for (const word of verseRecord.wordEntries) {
     word.simpleTokens = groupedSimpleTokens[word.canonicalAyahIndex];
     word.simpleText = word.simpleTokens.join(' ');
-    word.matchVariants = mergeVariants(
-      word.uthmaniText,
-      word.indopakText,
-      word.simpleTokens,
-    );
+    word.matchVariants = mergeQuranVariants({
+      uthmaniText: word.uthmaniText,
+      indopakText: word.indopakText,
+      simpleTokens: word.simpleTokens,
+    });
   }
 }
 

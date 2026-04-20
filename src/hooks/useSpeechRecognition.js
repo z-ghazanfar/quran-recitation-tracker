@@ -1,12 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { createAsrProcessorService } from '../services/asrProcessorService.js';
+import { CAPTURE_MODE } from '../audio/captureModes.js';
 
 const STABLE_INTERIM_COMMIT_MS = 320;
-const AUDIO_SOURCE = {
-  MICROPHONE: 'microphone',
-  DISPLAY_AUDIO: 'display-audio',
-  DISPLAY_AUDIO_WITH_MIC: 'display-audio-with-mic',
-};
 
 function getCommonPrefixLength(previousWords, nextWords) {
   const limit = Math.min(previousWords.length, nextWords.length);
@@ -19,22 +15,22 @@ function getCommonPrefixLength(previousWords, nextWords) {
   return index;
 }
 
-export function useSpeechRecognition({ onWords, onInterim }) {
+export function useSpeechRecognition({ onWords, onInterim, enabled = true }) {
   const recognitionRef = useRef(null);
   const [isListening, setIsListening] = useState(false);
   const [micError, setMicError] = useState(null);
   const [isSupported] = useState(
-    () => !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+    () => enabled && !!(window.SpeechRecognition || window.webkitSpeechRecognition)
   );
   const [isDisplayAudioSupported] = useState(
-    () => !!navigator.mediaDevices?.getDisplayMedia
+    () => enabled && !!navigator.mediaDevices?.getDisplayMedia
   );
   const activeRef = useRef(false);
   const terminalErrorRef = useRef(null);
   const emittedWordsRef = useRef(new Map());
   const latestInterimResultsRef = useRef(new Map());
   const stableCommitTimersRef = useRef(new Map());
-  const sourceRef = useRef(AUDIO_SOURCE.MICROPHONE);
+  const sourceRef = useRef(CAPTURE_MODE.MICROPHONE);
   const sourceTrackRef = useRef(null);
   const displayStreamRef = useRef(null);
   const micStreamRef = useRef(null);
@@ -84,10 +80,12 @@ export function useSpeechRecognition({ onWords, onInterim }) {
     micStreamRef.current = null;
     mixedStreamRef.current = null;
     audioContextRef.current = null;
-    sourceRef.current = AUDIO_SOURCE.MICROPHONE;
+    sourceRef.current = CAPTURE_MODE.MICROPHONE;
   }, []);
 
   useEffect(() => {
+    if (!enabled) return undefined;
+
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
     const asrProcessor = createAsrProcessorService();
@@ -207,11 +205,11 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
         terminalErrorRef.current = event.error;
         setMicError(
-          sourceRef.current === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
-            ? 'Shared audio or microphone access was denied. Start again and allow Chrome to capture the selected tab, window, or screen audio, plus the microphone.'
-            : sourceRef.current === AUDIO_SOURCE.DISPLAY_AUDIO
-              ? 'Shared audio access was denied. Start again and allow Chrome to capture the selected tab, window, or screen audio.'
-            : 'Microphone access denied. Please allow microphone access in your browser and try again.'
+          sourceRef.current === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC
+            ? 'Shared audio or microphone access was denied. Start again and allow the app to capture the selected window, tab, or screen audio, plus the microphone.'
+            : sourceRef.current === CAPTURE_MODE.DISPLAY_AUDIO
+              ? 'Shared audio access was denied. Start again and allow the app to capture the selected window, tab, or screen audio.'
+            : 'Microphone access denied. Please allow microphone access for this app or browser and try again.'
         );
         activeRef.current = false;
         setIsListening(false);
@@ -222,7 +220,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
         terminalErrorRef.current = event.error;
         activeRef.current = false;
         setIsListening(false);
-        setMicError('Speech recognition service could not be reached. Chrome built-in speech recognition needs a stable internet connection.');
+        setMicError('Speech recognition service could not be reached. Live recognition needs a stable internet connection.');
         stopSourceCapture();
         return;
       }
@@ -235,7 +233,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       // Chrome stops recognition after silence — restart automatically if we're still active
       if (activeRef.current && !terminalErrorRef.current) {
         try {
-          if (sourceRef.current !== AUDIO_SOURCE.MICROPHONE && sourceTrackRef.current) {
+          if (sourceRef.current !== CAPTURE_MODE.MICROPHONE && sourceTrackRef.current) {
             recognition.start(sourceTrackRef.current);
           } else {
             recognition.start();
@@ -262,7 +260,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       asrProcessor.dispose();
       stopSourceCapture();
     };
-  }, [stopSourceCapture]);
+  }, [enabled, stopSourceCapture]);
 
   const attachEndedHandler = useCallback((track, handler) => {
     track.addEventListener('ended', handler);
@@ -271,7 +269,9 @@ export function useSpeechRecognition({ onWords, onInterim }) {
     });
   }, []);
 
-  const start = useCallback(async ({ source = AUDIO_SOURCE.MICROPHONE } = {}) => {
+  const start = useCallback(async ({ source = CAPTURE_MODE.MICROPHONE } = {}) => {
+    if (!enabled) return false;
+
     const recognition = recognitionRef.current;
     if (!recognition || activeRef.current) return false;
 
@@ -280,9 +280,9 @@ export function useSpeechRecognition({ onWords, onInterim }) {
 
     let nextTrack = null;
 
-    if (source === AUDIO_SOURCE.DISPLAY_AUDIO || source === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC) {
+    if (source === CAPTURE_MODE.DISPLAY_AUDIO || source === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC) {
       if (!navigator.mediaDevices?.getDisplayMedia) {
-        setMicError('Shared audio capture is not supported in this browser.');
+        setMicError('Shared audio capture is not supported in this runtime.');
         return false;
       }
 
@@ -301,7 +301,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
           for (const track of stream.getTracks()) {
             track.stop();
           }
-          setMicError('No audio track was shared. In the Chrome share dialog, enable audio and choose the Zoom tab/window or the screen option that includes sound.');
+          setMicError('No audio track was shared. In the system share picker, enable audio and choose the Zoom window, tab, or screen option that includes sound.');
           return false;
         }
 
@@ -310,7 +310,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
           terminalErrorRef.current = 'capture-ended';
           setIsListening(false);
           setMicError(
-            source === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
+            source === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC
               ? 'Shared audio or microphone capture ended. Start again and choose the Zoom or tab audio source.'
               : 'Shared audio ended. Start again and choose the Zoom or tab audio source.'
           );
@@ -324,7 +324,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
 
         displayStreamRef.current = stream;
 
-        if (source === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC) {
+        if (source === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC) {
           const micStream = await navigator.mediaDevices.getUserMedia({
             audio: {
               echoCancellation: false,
@@ -350,7 +350,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
             await audioContext.close().catch(() => {
               // Ignore close races when setup fails.
             });
-            setMicError('Chrome could not create a mixed audio track from the shared audio and microphone.');
+            setMicError('The app could not create a mixed audio track from the shared audio and microphone.');
             return false;
           }
 
@@ -358,7 +358,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
           mixedStreamRef.current = destination.stream;
           audioContextRef.current = audioContext;
           sourceTrackRef.current = mixedTrack;
-          sourceRef.current = AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC;
+          sourceRef.current = CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC;
 
           for (const track of stream.getTracks()) {
             attachEndedHandler(track, handleCaptureEnded);
@@ -371,7 +371,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
           nextTrack = mixedTrack;
         } else {
           sourceTrackRef.current = audioTrack;
-          sourceRef.current = AUDIO_SOURCE.DISPLAY_AUDIO;
+          sourceRef.current = CAPTURE_MODE.DISPLAY_AUDIO;
 
           for (const track of stream.getTracks()) {
             attachEndedHandler(track, handleCaptureEnded);
@@ -382,15 +382,15 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       } catch (error) {
         if (error?.name === 'NotAllowedError') {
           setMicError(
-            source === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
-              ? 'Shared audio or microphone capture was cancelled. Start again and choose a tab/window with Share audio enabled, then allow microphone access.'
-              : 'Shared audio capture was cancelled. Start again and choose a tab/window with the Share audio option enabled.'
+            source === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC
+              ? 'Shared audio or microphone capture was cancelled. Start again, choose a window or screen with audio enabled, then allow microphone access.'
+              : 'Shared audio capture was cancelled. Start again and choose a window, tab, or screen with audio enabled.'
           );
         } else {
           setMicError(
-            source === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
-              ? 'Could not start mixed capture. Chrome must be allowed to capture the shared audio source and the microphone.'
-              : 'Could not start shared audio capture. Chrome must be allowed to capture the tab or screen audio.'
+            source === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC
+              ? 'Could not start mixed capture. The app must be allowed to capture the shared audio source and the microphone.'
+              : 'Could not start shared audio capture. The app must be allowed to capture the selected tab, window, or screen audio.'
           );
         }
         stopSourceCapture();
@@ -398,7 +398,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       }
     } else {
       stopSourceCapture();
-      sourceRef.current = AUDIO_SOURCE.MICROPHONE;
+      sourceRef.current = CAPTURE_MODE.MICROPHONE;
     }
 
     activeRef.current = true;
@@ -417,17 +417,19 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       setIsListening(false);
       stopSourceCapture();
       setMicError(
-        source === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
-          ? 'Chrome could not start speech recognition from the mixed audio track.'
-          : source === AUDIO_SOURCE.DISPLAY_AUDIO
-            ? 'Chrome could not start speech recognition from the shared audio track.'
+        source === CAPTURE_MODE.DISPLAY_AUDIO_WITH_MIC
+          ? 'The app could not start speech recognition from the mixed audio track.'
+          : source === CAPTURE_MODE.DISPLAY_AUDIO
+            ? 'The app could not start speech recognition from the shared audio track.'
           : 'Failed to start microphone speech recognition.'
       );
       return false;
     }
-  }, [attachEndedHandler, stopSourceCapture]);
+  }, [attachEndedHandler, enabled, stopSourceCapture]);
 
   const stop = useCallback(() => {
+    if (!enabled) return;
+
     activeRef.current = false;
     setIsListening(false);
     emittedWordsRef.current = new Map();
@@ -442,7 +444,7 @@ export function useSpeechRecognition({ onWords, onInterim }) {
       // Ignore stop requests after the recognition instance has already ended.
     }
     stopSourceCapture();
-  }, [stopSourceCapture]);
+  }, [enabled, stopSourceCapture]);
 
   return {
     isListening,
@@ -451,6 +453,6 @@ export function useSpeechRecognition({ onWords, onInterim }) {
     micError,
     start,
     stop,
-    AUDIO_SOURCE,
+    AUDIO_SOURCE: CAPTURE_MODE,
   };
 }

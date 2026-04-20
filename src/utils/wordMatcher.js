@@ -13,11 +13,11 @@ export const WORD_STATE = {
 };
 
 const LOCAL_WINDOW = 10;
-const FAR_WINDOW = 80;
+const FAR_WINDOW = 48;
 const REVIEW_WINDOW = 18;
 const MAX_TRIMMED_OVERLAP = 4;
 const MIN_LOCAL_ANCHOR = 2;
-const MIN_FAR_ANCHOR = 3;
+const MIN_FAR_ANCHOR = 4;
 
 function collapseRepeatedCharacters(value) {
   return String(value ?? '').replace(/(.)\1+/gu, '$1');
@@ -183,7 +183,9 @@ function applyAlignmentProgress(
   newAlignmentIndex,
   matchedAlignmentIndexes = [],
   mistakeAlignmentIndexes = [],
+  options = {},
 ) {
+  const preserveUnmatchedPending = options.preserveUnmatchedPending ?? false;
   const heardWordIndexes = [];
   const heardSet = new Set();
   const matchedSet = new Set(matchedAlignmentIndexes);
@@ -239,7 +241,7 @@ function applyAlignmentProgress(
       continue;
     }
 
-    if (states[canonicalIndex] === WORD_STATE.PENDING) {
+    if (!preserveUnmatchedPending && states[canonicalIndex] === WORD_STATE.PENDING) {
       states[canonicalIndex] = WORD_STATE.SKIPPED;
     }
   }
@@ -305,6 +307,8 @@ function attemptMergedAnchor(session, states, currentAlignmentIndex, processedCh
         currentAlignmentIndex,
         currentAlignmentIndex + shift + count,
         buildAlignmentRange(currentAlignmentIndex + shift, count),
+        [],
+        { preserveUnmatchedPending: shift > 0 },
       );
     }
   }
@@ -312,9 +316,11 @@ function attemptMergedAnchor(session, states, currentAlignmentIndex, processedCh
   return null;
 }
 
-function attemptLocalAnchor(session, states, currentAlignmentIndex, processedChunk) {
-  const maxShift =
-    processedChunk.tokens.length === 1 ? 1 : 2;
+function attemptLocalAnchor(session, states, currentAlignmentIndex, processedChunk, options = {}) {
+  const stuckCount = options.stuckCount ?? 0;
+  const maxShift = stuckCount >= 2
+    ? 6
+    : processedChunk.tokens.length === 1 ? 1 : 2;
 
   let best = null;
 
@@ -350,19 +356,23 @@ function attemptLocalAnchor(session, states, currentAlignmentIndex, processedChu
     currentAlignmentIndex,
     currentAlignmentIndex + best.shift + best.runLength,
     buildAlignmentRange(currentAlignmentIndex + best.shift, best.runLength),
+    [],
+    { preserveUnmatchedPending: best.shift > 0 || stuckCount >= 2 },
   );
 }
 
-function attemptLocalReveal(session, states, currentAlignmentIndex, processedChunk) {
+function attemptLocalReveal(session, states, currentAlignmentIndex, processedChunk, options = {}) {
+  const stuckCount = options.stuckCount ?? 0;
+  const expectedWindowSize = stuckCount >= 2 ? Math.max(LOCAL_WINDOW, 18) : LOCAL_WINDOW;
   const expectedWindow = session.alignmentWords.slice(
     currentAlignmentIndex,
-    currentAlignmentIndex + LOCAL_WINDOW,
+    currentAlignmentIndex + expectedWindowSize,
   );
 
   const alignment = alignAndReveal(
     processedChunk.tokens,
     expectedWindow,
-    { maxAlignmentExpectedWindow: LOCAL_WINDOW },
+    { maxAlignmentExpectedWindow: expectedWindowSize },
   );
 
   if (alignment.anchorIndices.length === 0) {
@@ -371,8 +381,8 @@ function attemptLocalReveal(session, states, currentAlignmentIndex, processedChu
 
   const anchorStart = alignment.firstMatchedIndex;
   const anchorLength = alignment.anchorIndices.length;
-  const maxAllowedSkip =
-    processedChunk.tokens.length === 1 ? 1 : 2;
+  const baseAllowedSkip = processedChunk.tokens.length === 1 ? 1 : 2;
+  const maxAllowedSkip = Math.min(4, baseAllowedSkip + Math.min(2, stuckCount));
 
   if (anchorStart < 0 || anchorStart > maxAllowedSkip) {
     return null;
@@ -407,6 +417,7 @@ function attemptLocalReveal(session, states, currentAlignmentIndex, processedChu
     currentAlignmentIndex + anchorEnd + 1,
     matchedAlignmentIndexes,
     mistakeAlignmentIndexes,
+    { preserveUnmatchedPending: anchorStart > 0 || stuckCount >= 2 },
   );
 }
 
@@ -424,10 +435,12 @@ function isFarAnchorStrongEnough(session, currentAlignmentIndex, candidateStart,
   const ayahDistance = sameSurah
     ? Math.abs(candidateToken.ayah - currentToken.ayah)
     : Number.POSITIVE_INFINITY;
+  const alignmentDistance = candidateStart - currentAlignmentIndex;
 
-  if (!samePage && runLength < 5) return false;
-  if (!sameSurah && runLength < 6) return false;
-  if (ayahDistance > 1 && runLength < 4) return false;
+  if (!sameSurah) return false;
+  if (!samePage && runLength < 6) return false;
+  if (ayahDistance > 1) return false;
+  if (alignmentDistance > 12 && runLength < 5) return false;
 
   return true;
 }
@@ -440,7 +453,7 @@ function attemptFarAnchor(session, states, currentAlignmentIndex, processedChunk
   let best = null;
   const searchEnd = Math.min(session.alignmentWords.length, currentAlignmentIndex + FAR_WINDOW);
 
-  for (let expectedStart = currentAlignmentIndex + 3; expectedStart < searchEnd; expectedStart += 1) {
+  for (let expectedStart = currentAlignmentIndex + 4; expectedStart < searchEnd; expectedStart += 1) {
     const runLength = contiguousRun(
       session.alignmentWords,
       expectedStart,
@@ -480,10 +493,12 @@ function attemptFarAnchor(session, states, currentAlignmentIndex, processedChunk
     currentAlignmentIndex,
     best.expectedStart + best.runLength,
     buildAlignmentRange(best.expectedStart, best.runLength),
+    [],
+    { preserveUnmatchedPending: true },
   );
 }
 
-export function matchSpokenWords(session, wordStates, currentAlignmentIndex, spokenInput) {
+export function matchSpokenWords(session, wordStates, currentAlignmentIndex, spokenInput, options = {}) {
   const states = [...wordStates];
   const processedChunk = toProcessedChunk(spokenInput);
   const reviewAnchor = findReviewAnchor(session, currentAlignmentIndex, processedChunk.tokens);
@@ -518,12 +533,12 @@ export function matchSpokenWords(session, wordStates, currentAlignmentIndex, spo
     return merged;
   }
 
-  const localAnchor = attemptLocalAnchor(session, states, currentAlignmentIndex, cleanedChunk);
+  const localAnchor = attemptLocalAnchor(session, states, currentAlignmentIndex, cleanedChunk, options);
   if (localAnchor) {
     return localAnchor;
   }
 
-  const localReveal = attemptLocalReveal(session, states, currentAlignmentIndex, cleanedChunk);
+  const localReveal = attemptLocalReveal(session, states, currentAlignmentIndex, cleanedChunk, options);
   if (localReveal) {
     return localReveal;
   }

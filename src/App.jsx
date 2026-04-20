@@ -2,7 +2,7 @@ import { startTransition, useCallback, useEffect, useReducer, useRef, useState }
 import ReadingNavigator from './components/SurahSelector.jsx';
 import QuranDisplay from './components/QuranDisplay.jsx';
 import MistakesSummary from './components/MistakesSummary.jsx';
-import { useSpeechRecognition } from './hooks/useSpeechRecognition.js';
+import { useLiveTranscription } from './hooks/useLiveTranscription.js';
 import { matchSpokenWords, initWordStates, WORD_STATE } from './utils/wordMatcher.js';
 import { SURAHS, TOTAL_PAGES } from './data/quranMeta.js';
 import {
@@ -91,6 +91,25 @@ function mergeSpokenChunks(previousChunk, nextChunk) {
       ...(nextChunk.normalizedWords ?? []).slice(overlap),
     ],
   }, MAX_PENDING_CHUNK_WORDS);
+}
+
+function shouldRetainUnmatchedChunk(spokenChunk) {
+  const averageTokenProbability = Number(spokenChunk?.meta?.averageTokenProbability ?? NaN);
+  const noSpeechProbability = Number(spokenChunk?.meta?.noSpeechProbability ?? NaN);
+
+  if (Number.isFinite(averageTokenProbability) && averageTokenProbability < 0.34) {
+    return false;
+  }
+
+  if (
+    Number.isFinite(noSpeechProbability) &&
+    noSpeechProbability >= 0.55 &&
+    (!Number.isFinite(averageTokenProbability) || averageTokenProbability < 0.5)
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function recitationReducer(state, action) {
@@ -272,7 +291,15 @@ function LegendItem({ state, label }) {
 
 export default function App() {
   const [navigationMode, setNavigationMode] = useState('page');
-  const [audioSource, setAudioSource] = useState('microphone');
+  const [captureMode, setCaptureMode] = useState('microphone');
+  const [nativeEngine, setNativeEngine] = useState(() => {
+    if (typeof window === 'undefined') return 'whisper';
+    try {
+      return window.localStorage.getItem('tarteel.nativeEngine') || 'whisper';
+    } catch {
+      return 'whisper';
+    }
+  });
   const [surahNum, setSurahNum] = useState(1);
   const [ayahNum, setAyahNum] = useState(1);
   const [pageNum, setPageNum] = useState(1);
@@ -294,6 +321,7 @@ export default function App() {
   const stateRef = useRef({ wordStates: [], currentWordIndex: 0, currentAlignmentIndex: 0 });
   const activeReadClearTimerRef = useRef(null);
   const pendingSpokenChunkRef = useRef(null);
+  const noProgressCountRef = useRef(0);
   useEffect(() => {
     stateRef.current = { wordStates, currentWordIndex, currentAlignmentIndex };
   }, [currentAlignmentIndex, currentWordIndex, wordStates]);
@@ -316,6 +344,7 @@ export default function App() {
       currentWordIndex: currentWordSnapshot,
       currentAlignmentIndex: alignmentSnapshot,
     } = stateRef.current;
+    const stuckCount = noProgressCountRef.current;
     const combinedChunk = mergeSpokenChunks(pendingSpokenChunkRef.current, spokenChunk);
     const {
       states,
@@ -327,17 +356,33 @@ export default function App() {
       statesSnapshot,
       alignmentSnapshot,
       combinedChunk,
+      { stuckCount },
     );
     const progressed = newAlignmentIndex > alignmentSnapshot;
     const isReviewOnly =
       !progressed &&
       heardWordIndexes.length > 0 &&
       heardWordIndexes.every((index) => index < currentWordSnapshot);
+    const shouldKeepPendingChunk = shouldRetainUnmatchedChunk(spokenChunk);
+    const updatedStuckCount = progressed ? 0 : Math.min(12, stuckCount + 1);
+    noProgressCountRef.current = updatedStuckCount;
+    const shouldResetPendingChunk =
+      !progressed &&
+      !isReviewOnly &&
+      shouldKeepPendingChunk &&
+      updatedStuckCount >= 4;
 
     if (progressed || isReviewOnly) {
       pendingSpokenChunkRef.current = null;
+      noProgressCountRef.current = 0;
+    } else if (shouldKeepPendingChunk) {
+      pendingSpokenChunkRef.current = shouldResetPendingChunk ? null : combinedChunk;
     } else {
-      pendingSpokenChunkRef.current = combinedChunk;
+      pendingSpokenChunkRef.current = null;
+    }
+
+    if (!progressed && !isReviewOnly && (!shouldKeepPendingChunk || shouldResetPendingChunk)) {
+      return;
     }
 
     stateRef.current = {
@@ -382,11 +427,48 @@ export default function App() {
     micError,
     start,
     stop,
-    AUDIO_SOURCE,
-  } = useSpeechRecognition({
+    provider,
+  } = useLiveTranscription({
     onWords: handleWords,
     onInterim: handleInterim,
+    nativeEngine,
   });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('tarteel.nativeEngine', nativeEngine);
+    } catch {
+      // Ignore storage failures (private mode, etc).
+    }
+  }, [nativeEngine]);
+
+  const [showBench] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).has('bench');
+  });
+  const [benchReport, setBenchReport] = useState(null);
+  const [benchRunning, setBenchRunning] = useState(false);
+  const [benchError, setBenchError] = useState(null);
+
+  const runBench = useCallback(async () => {
+    setBenchRunning(true);
+    setBenchError(null);
+
+    try {
+      const { runFatihahMatcherBench } = await import('./benchmarks/fatihahBench.js');
+      const report = runFatihahMatcherBench();
+      setBenchReport(report);
+    } catch (error) {
+      setBenchError(error instanceof Error ? error.message : 'Failed to run the matcher benchmark.');
+    } finally {
+      setBenchRunning(false);
+    }
+  }, []);
+
+  const captureModes = provider.captureModes ?? [];
+  const selectedCaptureMode = captureModes.find((mode) => mode.id === captureMode) ?? captureModes[0] ?? null;
+  const activeCaptureModeId = selectedCaptureMode?.id ?? captureMode;
 
   useEffect(() => {
     dispatch({ type: 'load-start' });
@@ -397,6 +479,7 @@ export default function App() {
 
       expectedSessionRef.current = selection.session;
       pendingSpokenChunkRef.current = null;
+      noProgressCountRef.current = 0;
       stateRef.current = {
         wordStates: initWordStates(selection.session.canonicalWords.length),
         currentWordIndex: 0,
@@ -429,6 +512,7 @@ export default function App() {
       currentAlignmentIndex: 0,
     };
     pendingSpokenChunkRef.current = null;
+    noProgressCountRef.current = 0;
     dispatch({ type: 'clear-session' });
   }, [isListening, stop]);
 
@@ -464,6 +548,7 @@ export default function App() {
     if (isListening) {
       stop();
       pendingSpokenChunkRef.current = null;
+      noProgressCountRef.current = 0;
       if (activeReadClearTimerRef.current) {
         clearTimeout(activeReadClearTimerRef.current);
         activeReadClearTimerRef.current = null;
@@ -472,7 +557,10 @@ export default function App() {
       return;
     }
 
-    const started = await start({ source: audioSource });
+    const started = await start({
+      source: selectedCaptureMode?.id ?? captureMode,
+      engine: nativeEngine,
+    });
     if (started) {
       dispatch({ type: 'start-session' });
     }
@@ -481,6 +569,7 @@ export default function App() {
   const handleReset = () => {
     if (isListening) stop();
     pendingSpokenChunkRef.current = null;
+    noProgressCountRef.current = 0;
     if (activeReadClearTimerRef.current) {
       clearTimeout(activeReadClearTimerRef.current);
       activeReadClearTimerRef.current = null;
@@ -503,6 +592,14 @@ export default function App() {
     ? getCurrentPositionFromSession(session, currentWordIndex)
     : null;
   const pageRange = getPageRange(ayahs);
+  const startButtonLabel = selectedCaptureMode?.id === 'display-audio-with-mic'
+    ? 'Start Desktop Session'
+    : selectedCaptureMode?.id === 'display-audio'
+      ? 'Start Shared Audio'
+      : 'Start Listening';
+  const unsupportedMessage = provider.id === 'local-mac-whisper'
+    ? provider.summary || 'The native macOS backend is not ready yet.'
+    : 'Speech recognition is not supported in this runtime. Use the packaged macOS desktop build or a current Chromium-based browser for the live tracker.';
 
   return (
     <div className="min-h-screen app-shell text-stone-100">
@@ -576,60 +673,110 @@ export default function App() {
             </div>
 
             <div className="mt-5">
-              <div className="text-[0.68rem] uppercase tracking-[0.24em] text-amber-100/45">Audio Source</div>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
-                <button
-                  type="button"
-                  onClick={() => setAudioSource(AUDIO_SOURCE.MICROPHONE)}
-                  disabled={isListening}
-                  className={`rounded-[1.25rem] border px-4 py-3 text-left transition ${
-                    audioSource === AUDIO_SOURCE.MICROPHONE
-                      ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
-                      : 'border-white/10 bg-white/5 text-stone-200 hover:bg-white/10'
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  <div className="text-sm font-semibold">Microphone</div>
-                  <div className="mt-1 text-xs text-current/75">
-                    Use the laptop mic or the browser’s current speech input.
-                  </div>
-                </button>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[0.68rem] uppercase tracking-[0.24em] text-amber-100/45">Capture Path</div>
+                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[0.65rem] uppercase tracking-[0.18em] text-stone-300/70">
+                  {provider.supportStatus}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                {captureModes.map((mode) => {
+                  const requiresDisplayAudio = mode.id !== 'microphone';
+                  const isModeSupported = !requiresDisplayAudio || isDisplayAudioSupported;
 
-                <button
-                  type="button"
-                  onClick={() => setAudioSource(AUDIO_SOURCE.DISPLAY_AUDIO)}
-                  disabled={isListening || !isDisplayAudioSupported}
-                  className={`rounded-[1.25rem] border px-4 py-3 text-left transition ${
-                    audioSource === AUDIO_SOURCE.DISPLAY_AUDIO
-                      ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
-                      : 'border-white/10 bg-white/5 text-stone-200 hover:bg-white/10'
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  <div className="text-sm font-semibold">Share Zoom Audio</div>
-                  <div className="mt-1 text-xs text-current/75">
-                    Pick a tab, window, or screen in Chrome and enable audio sharing.
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setAudioSource(AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC)}
-                  disabled={isListening || !isDisplayAudioSupported}
-                  className={`rounded-[1.25rem] border px-4 py-3 text-left transition ${
-                    audioSource === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
-                      ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
-                      : 'border-white/10 bg-white/5 text-stone-200 hover:bg-white/10'
-                  } disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  <div className="text-sm font-semibold">Share Audio + Mic</div>
-                  <div className="mt-1 text-xs text-current/75">
-                    Mix the shared source with the microphone into one live track.
-                  </div>
-                </button>
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => setCaptureMode(mode.id)}
+                      disabled={isListening || !isModeSupported}
+                      className={`rounded-[1.25rem] border px-4 py-3 text-left transition ${
+                        activeCaptureModeId === mode.id
+                          ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
+                          : 'border-white/10 bg-white/5 text-stone-200 hover:bg-white/10'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      <div className="text-sm font-semibold">{mode.label}</div>
+                      <div className="mt-1 text-xs text-current/75">{mode.description}</div>
+                    </button>
+                  );
+                })}
               </div>
 
+              {provider.id === 'local-mac-whisper' && (
+                <div className="mt-4 rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[0.68rem] uppercase tracking-[0.24em] text-amber-100/45">ASR Engine</div>
+                    <span className="text-[0.65rem] uppercase tracking-[0.18em] text-stone-300/70">
+                      {nativeEngine === 'wav2vec2' ? 'Quran Model' : 'Whisper'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setNativeEngine('whisper')}
+                      disabled={isListening}
+                      className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${
+                        nativeEngine === 'whisper'
+                          ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
+                          : 'border-white/10 bg-white/5 text-stone-200 hover:bg-white/10'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      Whisper
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNativeEngine('wav2vec2')}
+                      disabled={isListening}
+                      className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${
+                        nativeEngine === 'wav2vec2'
+                          ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-100'
+                          : 'border-white/10 bg-white/5 text-stone-200 hover:bg-white/10'
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      Wav2Vec2
+                    </button>
+                  </div>
+
+                  <p className="mt-3 text-xs leading-5 text-stone-300/65">
+                    Whisper is bundled inside the app. Wav2Vec2 uses a Quran-tuned Hugging Face model and requires local Python deps.
+                  </p>
+                </div>
+              )}
+
               <p className="mt-3 text-xs leading-5 text-stone-300/65">
-                <code>Share Zoom Audio</code> keeps the browser audio-only path. <code>Share Audio + Mic</code> mixes the shared source and microphone together, but Chrome still has to expose that tab, window, or screen audio in the share picker.
+                {provider.summary}
               </p>
+              <p className="mt-2 text-xs leading-5 text-amber-100/60">
+                {provider.roadmap}
+              </p>
+
+              {showBench && (
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[0.68rem] uppercase tracking-[0.24em] text-amber-100/45">Fatihah Bench</div>
+                    <button
+                      type="button"
+                      onClick={runBench}
+                      disabled={benchRunning}
+                      className="rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-[0.18em] text-stone-200 transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {benchRunning ? 'Running...' : 'Run'}
+                    </button>
+                  </div>
+
+                  {benchError && (
+                    <div className="mt-2 text-xs text-rose-200/80">{benchError}</div>
+                  )}
+
+                  {benchReport && (
+                    <div className="mt-2 text-xs text-stone-300/75">
+                      {benchReport.passed}/{benchReport.total} cases passed.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="mt-5 flex flex-wrap gap-3">
@@ -644,11 +791,7 @@ export default function App() {
               >
                 {isListening
                   ? 'Stop Listening'
-                  : audioSource === AUDIO_SOURCE.DISPLAY_AUDIO_WITH_MIC
-                    ? 'Start Mixed Capture'
-                    : audioSource === AUDIO_SOURCE.DISPLAY_AUDIO
-                    ? 'Start Shared Audio'
-                    : 'Start Listening'}
+                  : startButtonLabel}
               </button>
 
               <button
@@ -661,7 +804,7 @@ export default function App() {
 
             {!isSupported && (
               <div className="mt-4 rounded-2xl border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
-                Speech recognition is not supported in this browser. Use Chrome for the live tracker.
+                {unsupportedMessage}
               </div>
             )}
 

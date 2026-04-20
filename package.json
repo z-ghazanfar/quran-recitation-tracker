@@ -2,10 +2,22 @@
   "name": "tarteel",
   "private": true,
   "version": "0.0.0",
+  "description": "Quran recitation tracker for guided listening and mistake detection.",
+  "author": "Zain Ghazanfar",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:web": "vite build",
+    "native:build": "swift build -c release --package-path native/mac-audio-backend",
+    "native:whisper:build": "node scripts/build-local-whisper.mjs",
+    "native:model:download": "node scripts/download-whisper-model.mjs",
+    "native:prepare": "npm run native:whisper:build && npm run native:build && node scripts/prepare-native-runtime.mjs",
+    "desktop:dev": "npm run native:prepare && concurrently -k \"npm:dev\" \"npm:desktop:start\"",
+    "desktop:start": "wait-on tcp:5173 && ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .",
+    "desktop:pack": "npm run build:web && npm run native:prepare && electron-builder --dir",
+    "desktop:build": "npm run build:web && npm run native:prepare && electron-builder --mac dmg zip",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -30,5 +42,55 @@
     "tailwindcss": "^3.4.19",
     "vite": "^8.0.4",
     "wait-on": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.zghazanfar.quranrecitationtracker",
+    "productName": "Quran Recitation Tracker",
+    "afterPack": "build/after-pack.cjs",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/runtime",
+        "to": "native",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "electron/asr",
+        "to": "asr",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": null,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "The app listens to your recitation so it can track your position in the Qur'an in real time.",
+        "NSAudioCaptureUsageDescription": "The app can capture shared system audio so it can follow along with Zoom or other recitation audio."
+      }
+    },
+    "dmg": {
+      "sign": false
+    }
   }
 }

@@ -10,7 +10,14 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+release
 *.local
+native/models/*.bin
+native/runtime/
+native/mac-audio-backend/.build/
+native/build/
+native/vendor/
+.swiftpm-cache/
 
 # Editor directories and files
 .vscode/*
