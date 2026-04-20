@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
 const { spawn, spawnSync } = require('node:child_process');
@@ -259,9 +260,17 @@ function resolveWav2Vec2Python(options = {}) {
   const candidates = [];
   const explicit = String(options?.pythonExe ?? options?.pythonPath ?? '').trim();
   const envConfigured = String(process.env.TARTEEL_WAV2VEC2_PYTHON ?? '').trim();
+  const home = os.homedir();
 
   if (explicit) candidates.push(explicit);
   if (envConfigured) candidates.push(envConfigured);
+  // Finder-launched apps often don't inherit your shell PATH. Include common
+  // Anaconda/Miniconda locations explicitly.
+  candidates.push('/opt/homebrew/anaconda3/bin/python3');
+  candidates.push('/opt/anaconda3/bin/python3');
+  candidates.push(path.join(home, 'anaconda3', 'bin', 'python3'));
+  candidates.push(path.join(home, 'miniconda3', 'bin', 'python3'));
+  candidates.push(path.join(home, 'mambaforge', 'bin', 'python3'));
   candidates.push('/opt/homebrew/bin/python3');
   candidates.push('/usr/local/bin/python3');
   candidates.push('/usr/bin/python3');
@@ -330,7 +339,9 @@ function getNativeBackendInfo(options = {}) {
     if (!wav2vec2Python.hasPython) {
       missing.push('python3 was not available for the wav2vec2 backend.');
     } else if (!wav2vec2Python.hasDeps) {
-      missing.push('Python deps missing for wav2vec2. Install torch + transformers + numpy.');
+      missing.push(
+        `Python deps missing for wav2vec2 in ${wav2vec2Python.pythonExe}. Install torch + transformers + numpy for that Python.`,
+      );
     }
   }
 
